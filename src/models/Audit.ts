@@ -1,0 +1,205 @@
+import { AuditOperationTypes } from 'plus0-sdk';
+import type { AuditType } from 'plus0-sdk';
+import Model from '~/models/Model';
+import Noco from 'src/Plus0';
+import { extractProps } from '~/helpers/extractProps';
+import { MetaTable } from '~/utils/globals';
+
+const opTypes = <const>[
+  'COMMENT',
+  'DATA',
+  'PROJECT',
+  'VIRTUAL_RELATION',
+  'RELATION',
+  'TABLE_VIEW',
+  'TABLE',
+  'VIEW',
+  'META',
+  'WEBHOOKS',
+  'AUTHENTICATION',
+  'TABLE_COLUMN',
+  'ORG_USER',
+];
+
+const opSubTypes = <const>[
+  'UPDATE',
+  'INSERT',
+  'BULK_INSERT',
+  'BULK_UPDATE',
+  'BULK_DELETE',
+  'LINK_RECORD',
+  'UNLINK_RECORD',
+  'DELETE',
+  'CREATE',
+  'RENAME',
+  'IMPORT_FROM_ZIP',
+  'EXPORT_TO_FS',
+  'EXPORT_TO_ZIP',
+  'SIGNIN',
+  'SIGNUP',
+  'PASSWORD_RESET',
+  'PASSWORD_FORGOT',
+  'PASSWORD_CHANGE',
+  'EMAIL_VERIFICATION',
+  'ROLES_MANAGEMENT',
+  'INVITE',
+  'RESEND_INVITE',
+];
+
+export default class Audit implements AuditType {
+  id?: string;
+  user?: string;
+  ip?: string;
+  dataset_id?: string;
+  project_id?: string;
+  fk_model_id?: string;
+  row_id?: string;
+  op_type?: (typeof opTypes)[number];
+  op_sub_type?: (typeof opSubTypes)[number];
+  status?: string;
+  description?: string;
+  details?: string;
+
+  constructor(audit: Partial<Audit>) {
+    Object.assign(this, audit);
+  }
+
+  public static async get(auditId: string) {
+    const audit = await Noco.ncMeta.metaGet2(
+      null,
+      null,
+      MetaTable.AUDIT,
+      auditId,
+    );
+    return audit && new Audit(audit);
+  }
+
+  // Will only await for Audit insertion if `forceAwait` is true, which will be true in test environment by default
+  public static async insert(
+    audit: Partial<Audit>,
+    ncMeta = Noco.ncMeta,
+    { forceAwait }: { forceAwait: boolean } = {
+      forceAwait: process.env['TEST'] === 'true',
+    },
+  ) {
+    if (process.env.NC_DISABLE_AUDIT === 'true') {
+      return;
+    }
+    const insertAudit = async () => {
+      const insertObj = extractProps(audit, [
+        'user',
+        'ip',
+        'dataset_id',
+        'project_id',
+        'row_id',
+        'fk_model_id',
+        'op_type',
+        'op_sub_type',
+        'status',
+        'description',
+        'details',
+      ]);
+      if (
+        (!insertObj.project_id || !insertObj.dataset_id) &&
+        insertObj.fk_model_id
+      ) {
+        const model = await Model.getByIdOrName(
+          { id: insertObj.fk_model_id },
+          ncMeta,
+        );
+
+        insertObj.project_id = model.project_id;
+        insertObj.dataset_id = model.dataset_id;
+      }
+
+      return await ncMeta.metaInsert2(null, null, MetaTable.AUDIT, insertObj);
+    };
+
+    if (forceAwait) {
+      return await insertAudit();
+    } else {
+      return insertAudit();
+    }
+  }
+
+  public static async auditList(args) {
+    const query = Noco.ncMeta
+      .knex(MetaTable.AUDIT)
+      .join(
+        MetaTable.USERS,
+        `${MetaTable.USERS}.email`,
+        `${MetaTable.AUDIT}.user`,
+      )
+      .select(`${MetaTable.AUDIT}.*`, `${MetaTable.USERS}.display_name`)
+      .where('row_id', args.row_id)
+      .where('fk_model_id', args.fk_model_id)
+      .where('op_type', '!=', AuditOperationTypes.COMMENT)
+      .orderBy('created_at', 'desc');
+
+    const audits = await query;
+
+    return audits?.map((a) => new Audit(a));
+  }
+
+  static async baseAuditList(
+    baseId: string,
+    {
+      limit = 25,
+      offset = 0,
+      sourceId,
+    }: {
+      limit?: number;
+      offset?: number;
+      sourceId?: string;
+    },
+  ) {
+    return await Noco.ncMeta.metaList2(null, null, MetaTable.AUDIT, {
+      condition: {
+        project_id: baseId,
+        ...(sourceId ? { dataset_id: sourceId } : {}),
+      },
+      orderBy: {
+        created_at: 'desc',
+      },
+      limit,
+      offset,
+    });
+  }
+
+  static async baseAuditCount(
+    baseId: string,
+    sourceId?: string,
+  ): Promise<number> {
+    return (
+      await Noco.ncMeta
+        .knex(MetaTable.AUDIT)
+        .where({
+          project_id: baseId,
+          ...(sourceId ? { dataset_id: sourceId } : {}),
+        })
+        .count('id', { as: 'count' })
+        .first()
+    )?.count;
+  }
+
+  static async sourceAuditList(sourceId: string, { limit = 25, offset = 0 }) {
+    return await Noco.ncMeta.metaList2(null, null, MetaTable.AUDIT, {
+      condition: { dataset_id: sourceId },
+      orderBy: {
+        created_at: 'desc',
+      },
+      limit,
+      offset,
+    });
+  }
+
+  static async sourceAuditCount(sourceId: string) {
+    return (
+      await Noco.ncMeta
+        .knex(MetaTable.AUDIT)
+        .where({ dataset_id: sourceId })
+        .count('id', { as: 'count' })
+        .first()
+    )?.count;
+  }
+}
